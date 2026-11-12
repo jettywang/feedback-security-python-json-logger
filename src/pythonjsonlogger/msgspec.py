@@ -39,26 +39,39 @@ def msgspec_default(obj: Any) -> Any:
 ### CLASSES
 ### ============================================================================
 class MsgspecFormatter(core.BaseJsonFormatter):
-    """JSON formatter using [`msgspec.json.Encoder`](https://jcristharif.com/msgspec/api.html#msgspec.json.Encoder) for encoding."""
+    """JSON formatter using
+    [`msgspec.json.Encoder`](https://jcristharif.com/msgspec/api.html#msgspec.json.Encoder)
+    for encoding."""
 
     def __init__(
         self,
         *args,
         json_default: Callable | None = msgspec_default,
+        stdlib_compat: bool = False,
         **kwargs,
     ) -> None:
         """
         Args:
             args: see [BaseJsonFormatter][pythonjsonlogger.core.BaseJsonFormatter]
-            json_default: a function for encoding non-standard objects
+            json_default: a function for encoding non-standard objects. Passing `None`
+                falls back to `msgspec_default`, matching `JsonFormatter` behaviour,
+                instead of enabling msgspec's strict mode.
+            stdlib_compat: normalize the log record before encoding so the parsed
+                output matches the standard library `JsonFormatter` contract for
+                types msgspec encodes natively (datetimes use an ISO offset rather
+                than `Z`, bytes use URL-safe base64, dataclasses and enums use the
+                shared defaults, sets become strings).
             kwargs: see [BaseJsonFormatter][pythonjsonlogger.core.BaseJsonFormatter]
         """
         super().__init__(*args, **kwargs)
 
-        self.json_default = json_default
+        self.json_default = json_default if json_default is not None else msgspec_default
+        self.stdlib_compat = stdlib_compat
         self._encoder = msgspec.json.Encoder(enc_hook=self.json_default)
         return
 
     def jsonify_log_record(self, log_data: core.LogData) -> str:
         """Returns a json string of the log data."""
+        if self.stdlib_compat:
+            log_data = d.stdlib_compat_normalize(log_data)
         return self._encoder.encode(log_data).decode("utf8")

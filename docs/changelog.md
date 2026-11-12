@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI: Use trusted publishing to create PyPI and GitHub releases.
 - Documentation: Quickstart examples are tested to ensure the sample output matches reality.
 - Add support for Python 3.15, PyPy 3.12
+- `pythonjsonlogger.defaults.stdlib_compat_normalize` and a `stdlib_compat` option on
+  `MsgspecFormatter` so msgspec output can match the standard library formatter contract
+  for types msgspec encodes natively (datetimes, bytes, dataclasses, enums, sets). See
+  the new [Encoder Backends and Migration](backends.md) documentation.
+- Shared output contract tests (`tests/test_output_contract.py`) covering field names,
+  value types, dates, exceptions, custom objects, and unregistered-object fallback. The
+  suite runs on the standard library backend alone and adds optional backends when installed.
 
 ### Removed
 - `STYLE_STRING_FORMAT_REGEX`, which is no longer used to find `{` style fields. [#75](https://github.com/nhairs/python-json-logger/pull/75)
@@ -18,6 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Preserve an exception's own notes when encoding exception instances, including exception group summaries. Related to [#67](https://github.com/nhairs/python-json-logger/issues/67).
 - Constrain the documentation dependency to `mkdocs<2`. [#80](https://github.com/nhairs/python-json-logger/issues/80)
 - Replaced MyPy with Pyrefly for type checking
+- `MsgspecFormatter(json_default=None)` now falls back to the shared `msgspec_default`
+  hook instead of enabling msgspec strict mode, matching `JsonFormatter` behaviour.
+
+### Security
+- The shared `unknown_default` fallback no longer emits the default `object.__repr__`
+  (`"<module.Class object at 0x...>"`), which exposed internal object identity for
+  unregistered types. It now returns the class name when neither `__str__` nor
+  `__repr__` was explicitly defined; custom string/repr methods remain supported.
 
 ### Fixed
 - `exc_info_as_array=True` now splits cached exception text into lines when a transported log record has no `exc_info` tuple. [#89](https://github.com/nhairs/python-json-logger/issues/89)

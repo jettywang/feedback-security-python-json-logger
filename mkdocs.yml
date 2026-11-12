@@ -13,6 +13,7 @@ nav:
   - "Home": index.md
   - quickstart.md
   - time.md
+  - backends.md
   - cookbook.md
   - benchmarking.md
   - changelog.md

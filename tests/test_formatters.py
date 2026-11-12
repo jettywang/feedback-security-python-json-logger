@@ -760,7 +760,7 @@ def test_default_encoder_with_timestamp(env: LoggingEnvironment, class_: type[Ba
         (SomeDataclass, str, "SomeDataclass"),
         (SomeClass, str, "SomeClass"),
         (SomeClass(1234), str, NO_TEST),
-        (BrokenClass(), str, "__could_not_encode__"),
+        (BrokenClass(), str, "BrokenClass"),
         (MultiEnum.NONE, type(None), None),
         (MultiEnum.BOOL, bool, MultiEnum.BOOL.value),
         (MultiEnum.STR, str, MultiEnum.STR.value),

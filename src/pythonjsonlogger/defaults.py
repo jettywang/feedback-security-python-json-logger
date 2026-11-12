@@ -31,21 +31,30 @@ import uuid
 def unknown_default(obj: Any) -> str:
     """Backup default function for any object type.
 
-    Will attempt to use `str` or `repr`. If both functions error will return
-    the string `"__could_not_encode__"`.
+    Will attempt to use `str` or `repr`. If both functions error, or neither
+    was explicitly defined on the object's class, will return the class name
+    (or `"__could_not_encode__"` for anonymous classes).
+
+    The default `object.__str__` / `object.__repr__` output (e.g.
+    `"<module.Class object at 0x...>"`) is never emitted because it exposes
+    internal object identity. Explicitly defined `__str__` / `__repr__`
+    methods are still honoured.
 
     Args:
         obj: object to handle
     """
-    try:
-        return str(obj)
-    except Exception:  # pylint: disable=broad-exception-caught
-        pass
-    try:
-        return repr(obj)
-    except Exception:  # pylint: disable=broad-exception-caught
-        pass
-    return "__could_not_encode__"
+    obj_type = type(obj)
+    if obj_type.__str__ is not object.__str__:
+        try:
+            return str(obj)
+        except Exception:  # pylint: disable=broad-exception-caught
+            pass
+    if obj_type.__repr__ is not object.__repr__:
+        try:
+            return repr(obj)
+        except Exception:  # pylint: disable=broad-exception-caught
+            pass
+    return obj_type.__name__ if obj_type.__name__ else "__could_not_encode__"
 
 
 ## Types
@@ -136,6 +145,51 @@ def datetime_any(obj: datetime.time | datetime.date | datetime.date) -> str:
         obj: object to handle
     """
     return obj.isoformat()
+
+
+def stdlib_compat_normalize(obj: Any) -> Any:
+    """Recursively rewrite values so backends with native type support match
+    the standard library `JsonFormatter` output contract.
+
+    Native encoders such as `msgspec` handle some types before their encoder
+    hook runs (datetimes, bytes, dataclasses, enums, sets), so an encoder hook
+    alone cannot make their output match. Normalizing the payload before
+    encoding applies the same conventions as
+    [JsonEncoder][pythonjsonlogger.json.JsonEncoder]:
+
+    - `datetime`/`date`/`time` become `isoformat()` strings (UTC uses `+00:00`,
+      never the `Z` suffix used by `msgspec`)
+    - `bytes`/`bytearray` become URL-safe base64 strings
+    - dataclass instances become plain dictionaries via `dataclasses.asdict`
+    - `Enum` members become their value and `Enum` classes a list of values
+    - sets/frozensets become strings, mirroring `str(obj)` fallback
+    - containers are copied with their contents normalized
+
+    Args:
+        obj: object to normalize
+    """
+    if use_datetime_any(obj):
+        return datetime_any(obj)
+
+    if use_bytes_default(obj):
+        return bytes_default(obj)
+
+    if use_enum_default(obj):
+        return stdlib_compat_normalize(enum_default(obj))
+
+    if use_dataclass_default(obj):
+        return stdlib_compat_normalize(dataclass_default(obj))
+
+    if isinstance(obj, dict):
+        return {key: stdlib_compat_normalize(value) for key, value in obj.items()}
+
+    if isinstance(obj, (list, tuple)):
+        return [stdlib_compat_normalize(item) for item in obj]
+
+    if isinstance(obj, (set, frozenset)):
+        return str(obj)
+
+    return obj
 
 
 ## Exception and Tracebacks
