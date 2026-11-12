@@ -482,6 +482,150 @@ def test_add_static_fields(env: LoggingEnvironment, class_: type[BaseJsonFormatt
 
 
 @pytest.mark.parametrize("class_", ALL_FORMATTERS)
+def test_reserved_field_mapping_trusted_record_wins_over_message(
+    env: LoggingEnvironment, class_: type[BaseJsonFormatter]
+):
+    env.set_formatter(
+        class_(
+            rename_fields={"audit_subject": "audit.subject"},
+            reserved_field_mapping={"audit_subject": "audit.subject"},
+        )
+    )
+
+    env.logger.info(
+        {"audit.subject": "untrusted", "other": "ok"},
+        extra={"audit_subject": "gateway-user"},
+    )
+    log_json = env.load_json()
+
+    assert log_json["audit.subject"] == "gateway-user"
+    assert log_json["other"] == "ok"
+    assert "audit_subject" not in log_json
+    return
+
+
+@pytest.mark.parametrize("class_", ALL_FORMATTERS)
+def test_reserved_field_mapping_applies_to_static_fields(
+    env: LoggingEnvironment, class_: type[BaseJsonFormatter]
+):
+    env.set_formatter(
+        class_(
+            static_fields={"audit_subject": "static-user"},
+            reserved_field_mapping={"audit_subject": "audit_subject"},
+        )
+    )
+
+    env.logger.info({"audit_subject": "untrusted"})
+    log_json = env.load_json()
+
+    assert log_json["audit_subject"] == "static-user"
+    return
+
+
+@pytest.mark.parametrize("class_", ALL_FORMATTERS)
+def test_reserved_field_mapping_record_overrides_static_fields(
+    env: LoggingEnvironment, class_: type[BaseJsonFormatter]
+):
+    env.set_formatter(
+        class_(
+            static_fields={"audit_subject": "static-user"},
+            reserved_field_mapping={"audit_subject": "audit_subject"},
+        )
+    )
+
+    env.logger.info("hello", extra={"audit_subject": "gateway-user"})
+    log_json = env.load_json()
+
+    assert log_json["audit_subject"] == "gateway-user"
+    return
+
+
+@pytest.mark.parametrize("class_", ALL_FORMATTERS)
+def test_reserved_field_mapping_missing_omitted_by_default(
+    env: LoggingEnvironment, class_: type[BaseJsonFormatter]
+):
+    env.set_formatter(
+        class_(reserved_field_mapping={"audit_subject": "audit_subject"})
+    )
+
+    env.logger.info({"audit_subject": "untrusted", "other": "ok"})
+    log_json = env.load_json()
+
+    assert "audit_subject" not in log_json
+    assert log_json["other"] == "ok"
+    return
+
+
+@pytest.mark.parametrize("class_", ALL_FORMATTERS)
+def test_reserved_field_mapping_missing_keep_missing(
+    env: LoggingEnvironment, class_: type[BaseJsonFormatter]
+):
+    env.set_formatter(
+        class_(
+            reserved_field_mapping={"audit_subject": "audit_subject"},
+            reserved_field_mapping_keep_missing=True,
+        )
+    )
+
+    env.logger.info({"audit_subject": "untrusted"})
+    log_json = env.load_json()
+
+    assert log_json["audit_subject"] is None
+    return
+
+
+@pytest.mark.parametrize("class_", ALL_FORMATTERS)
+def test_reserved_field_mapping_blocks_extra_spoofing(
+    env: LoggingEnvironment, class_: type[BaseJsonFormatter]
+):
+    env.set_formatter(
+        class_(reserved_field_mapping={"audit_subject": "actor"})
+    )
+
+    env.logger.info(
+        "hello",
+        extra={"audit_subject": "trusted", "actor": "untrusted-extra"},
+    )
+    log_json = env.load_json()
+
+    assert log_json["actor"] == "trusted"
+    assert "audit_subject" not in log_json
+    return
+
+
+@pytest.mark.parametrize("class_", ALL_FORMATTERS)
+def test_reserved_field_mapping_keep_missing_flag_governs_missing(
+    env: LoggingEnvironment, class_: type[BaseJsonFormatter]
+):
+    env.set_formatter(
+        class_(
+            rename_fields={"audit_subject": "audit_subject"},
+            reserved_field_mapping={"audit_subject": "audit_subject"},
+            rename_fields_keep_missing=True,
+        )
+    )
+
+    env.logger.info({"audit_subject": "untrusted"})
+    log_json = env.load_json()
+
+    assert "audit_subject" not in log_json
+    return
+
+
+@pytest.mark.parametrize("class_", ALL_FORMATTERS)
+def test_reserved_field_mapping_is_copied(
+    env: LoggingEnvironment, class_: type[BaseJsonFormatter]
+):
+    mapping = {"audit_subject": "actor"}
+    formatter = class_(reserved_field_mapping=mapping)
+    mapping["audit_subject"] = "tampered"
+
+    assert formatter.reserved_field_mapping == {"audit_subject": "actor"}
+    assert type(formatter.reserved_field_mapping) is dict
+    return
+
+
+@pytest.mark.parametrize("class_", ALL_FORMATTERS)
 def test_format_keys(env: LoggingEnvironment, class_: type[BaseJsonFormatter]):
     supported_keys = [
         "asctime",

@@ -132,6 +132,8 @@ class BaseJsonFormatter(logging.Formatter):
         rename_fields_keep_missing: bool = False,
         static_fields: dict[str, Any] | None = None,
         reserved_attrs: Sequence[str] | None = None,
+        reserved_field_mapping: dict[str, str] | None = None,
+        reserved_field_mapping_keep_missing: bool = False,
         timestamp: bool | str = False,
         defaults: dict[str, Any] | None = None,
         exc_info_as_array: bool = False,
@@ -155,6 +157,16 @@ class BaseJsonFormatter(logging.Formatter):
             reserved_attrs: an optional list of fields that will be skipped when
                 outputting json log record. Pass a list or tuple, not a string.
                 Defaults to [all log record attributes][pythonjsonlogger.core.RESERVED_ATTRS].
+            reserved_field_mapping: an optional dict mapping trusted `LogRecord` attribute
+                names (including `static_fields` and fields written by a logging gateway)
+                to the output key that must hold their value. Values are taken from the
+                record, falling back to `static_fields`, and always win over a dictionary
+                message or an `extra` attribute using the same output key, including when
+                the output key is produced by `rename_fields`. The source attributes are
+                also reserved so they cannot leak or spoof the protected output key.
+            reserved_field_mapping_keep_missing: when a mapped attribute is absent from both
+                the record and `static_fields`, include its output key with a value of
+                `None`. By default missing protected fields are omitted.
             timestamp: an optional string/boolean field to add a timestamp when
                 outputting the json log record. If string is passed, timestamp will be added
                 to log record using string as key. If True boolean is passed, timestamp key
@@ -226,8 +238,14 @@ class BaseJsonFormatter(logging.Formatter):
             {key: static_fields[key] for key in static_fields} if static_fields is not None else {}
         )
         self.defaults = {key: defaults[key] for key in defaults} if defaults is not None else {}
+        self.reserved_field_mapping = (
+            {key: reserved_field_mapping[key] for key in reserved_field_mapping}
+            if reserved_field_mapping is not None
+            else {}
+        )
 
         self.rename_fields_keep_missing = rename_fields_keep_missing
+        self.reserved_field_mapping_keep_missing = reserved_field_mapping_keep_missing
         if reserved_attrs is None:
             reserved_attrs = RESERVED_ATTRS
         elif isinstance(reserved_attrs, str):
@@ -237,6 +255,13 @@ class BaseJsonFormatter(logging.Formatter):
 
         self._skip_fields = set(self._required_fields)
         self._skip_fields.update(self.reserved_attrs)
+        # Protected source attributes are not merged as regular extras, so they
+        # cannot be emitted under their own name or spoof the mapped output key.
+        self._skip_fields.update(self.reserved_field_mapping)
+        # Map output keys back to their trusted source attribute.
+        self._reserved_field_sources: dict[str, str] = {
+            output_key: source for source, output_key in self.reserved_field_mapping.items()
+        }
         self.exc_info_as_array = exc_info_as_array
         self.stack_info_as_array = stack_info_as_array
         return
@@ -370,13 +395,20 @@ class BaseJsonFormatter(logging.Formatter):
         *Changed in 4.0*: `log_record` renamed to `log_data`
         """
         for field in self.defaults:
-            log_data[self._get_rename(field)] = self.defaults[field]
+            if field not in self.reserved_field_mapping:
+                log_data[self._get_rename(field)] = self.defaults[field]
 
         for field in self._required_fields:
             log_data[self._get_rename(field)] = record.__dict__.get(field)
 
-        for data_dict in [self.static_fields, message_dict]:
-            for key, value in data_dict.items():
+        for key, value in self.static_fields.items():
+            if key not in self.reserved_field_mapping:
+                log_data[self._get_rename(key)] = value
+
+        for key, value in message_dict.items():
+            # Protected attributes are sourced from the record/static_fields only;
+            # a dictionary message must not emit an untrusted value under that name.
+            if key not in self.reserved_field_mapping:
                 log_data[self._get_rename(key)] = value
 
         merge_record_extra(
@@ -392,9 +424,23 @@ class BaseJsonFormatter(logging.Formatter):
                 record.created, tz=timezone.utc
             )
 
+        # Apply last so the trusted record value always wins the protected output
+        # key over defaults, static fields, dictionary messages and `extra`.
+        for source, output_key in self.reserved_field_mapping.items():
+            if source in record.__dict__:
+                log_data[output_key] = record.__dict__[source]
+            elif source in self.static_fields:
+                log_data[output_key] = self.static_fields[source]
+            elif self.reserved_field_mapping_keep_missing:
+                log_data[output_key] = None
+            else:
+                log_data.pop(output_key, None)
+
         if self.rename_fields_keep_missing:
             for field in self.rename_fields.values():
-                if field not in log_data:
+                # Missing protected fields are governed by
+                # `reserved_field_mapping_keep_missing`, not this option.
+                if field not in log_data and field not in self._reserved_field_sources:
                     log_data[field] = None
         return
 

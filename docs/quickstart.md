@@ -200,6 +200,41 @@ formatter = JsonFormatter(
 )
 ```
 
+### Protecting trusted fields
+
+A logging gateway may write trusted attributes (for example an audit subject and timestamp) directly onto each `LogRecord`, while business code reports the remaining attributes through a dictionary message. Use `reserved_field_mapping` to pin a trusted record attribute to an output key so a dictionary message or `extra` value with the same key cannot spoof it.
+
+The mapping uses the same `{source: output_key}` direction as `rename_fields`, so it works alongside field renaming and also covers `static_fields` as a fallback source:
+
+```python
+formatter = JsonFormatter(
+    rename_fields={"audit_subject": "audit.subject"},
+    reserved_field_mapping={"audit_subject": "audit.subject"},
+    static_fields={"audit_subject": "unknown"},
+)
+logHandler.setFormatter(formatter)
+logger.info({"audit.subject": "untrusted"}, extra={"audit_subject": "gateway"})
+logger.info({"audit.subject": "untrusted"})
+```
+
+Output:
+
+```json
+{"message": "", "audit.subject": "gateway"}
+{"message": "", "audit.subject": "unknown"}
+```
+
+The trusted value is read from the `LogRecord` first and then from `static_fields`. If the protected attribute is absent from both, its output key is omitted. Pass `reserved_field_mapping_keep_missing=True` to emit the key with a value of `null` instead:
+
+```python
+formatter = JsonFormatter(
+    reserved_field_mapping={"audit_subject": "audit_subject"},
+    reserved_field_mapping_keep_missing=True,
+)
+```
+
+A mapped source attribute is treated as reserved, so it is never emitted under its own name as a regular `extra` field. Protected fields are applied after every source listed in [Field Precedence](#field-precedence), including `rename_fields`, and always win a collision for the mapped output key.
+
 ### Custom object serialization
 
 Most formatters support `json_default` which is used to control how objects are serialized.

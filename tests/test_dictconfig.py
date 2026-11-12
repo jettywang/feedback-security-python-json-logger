@@ -125,3 +125,54 @@ def test_defaults_external_reference_support() -> None:
     assert formatter.defaults["ext-val"] == EXT_VAL  # type: ignore[union-attr]
     assert type(formatter.defaults) is dict  # type: ignore[union-attr]
     return
+
+
+def test_reserved_field_mapping_support() -> None:
+    logging.config.dictConfig(
+        {
+            "version": 1,
+            "disable_existing_loggers": False,
+            "formatters": {
+                "default": {
+                    "()": "pythonjsonlogger.json.JsonFormatter",
+                    "rename_fields": {"audit_subject": "audit.subject"},
+                    "reserved_field_mapping": {"audit_subject": "audit.subject"},
+                    "static_fields": {
+                        "audit_subject": "ext://tests.test_dictconfig.EXT_VAL"
+                    },
+                }
+            },
+            "handlers": {
+                "default": {
+                    "level": "DEBUG",
+                    "formatter": "default",
+                    "class": "logging.StreamHandler",
+                    "stream": "ext://sys.stdout",
+                },
+            },
+            "loggers": {
+                "": {"handlers": ["default"], "level": "WARNING", "propagate": False},
+            },
+        }
+    )
+    formatter = logging.root.handlers[0].formatter
+    assert formatter.reserved_field_mapping == {  # type: ignore[union-attr]
+        "audit_subject": "audit.subject"
+    }
+    assert type(formatter.reserved_field_mapping) is dict  # type: ignore[union-attr]
+    # ext:// references inside nested configuration dicts are converted
+    assert formatter.static_fields["audit_subject"] == EXT_VAL  # type: ignore[union-attr]
+
+    buffer = io.StringIO()
+    handler = logging.StreamHandler(buffer)
+    handler.setFormatter(formatter)
+    logger = logging.getLogger("pythonjsonlogger.tests.dictconfig.reserved")
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+    logger.info({"audit.subject": "untrusted"})
+
+    log_json = json.loads(buffer.getvalue())
+    assert log_json["audit.subject"] == EXT_VAL
+    logger.removeHandler(handler)
+    return
+
