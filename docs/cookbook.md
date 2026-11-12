@@ -149,6 +149,33 @@ does not recursively include members or their notes:
 }
 ```
 
+## Logging exceptions without messages
+
+Exception messages can contain user-submitted data that should not be logged.
+Set `project_exceptions=True` to project `exc_info` and `stack_info` to
+exception types and stack locations only. Exception messages, notes, and source
+lines are removed, while chaining markers are kept so the order of chained
+exceptions remains visible.
+
+```python
+handler.setFormatter(JsonFormatter(project_exceptions=True))
+
+try:
+    raise ValueError("user submitted content")
+except ValueError as cause:
+    try:
+        raise RuntimeError("another secret") from cause
+    except RuntimeError:
+        logger.info("something failed", exc_info=True)
+```
+
+```json
+{
+  "message": "something failed",
+  "exc_info": "Traceback (most recent call last):\n  File \"<string>\", line 14, in <module>\nValueError\nThe above exception was the direct cause of the following exception:\nTraceback (most recent call last):\n  File \"<string>\", line 17, in <module>\nRuntimeError"
+}
+```
+
 ## Request / Trace IDs
 
 There are many ways to add consistent request IDs to your logging. The exact method will depend on your needs and application.

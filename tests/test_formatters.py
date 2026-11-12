@@ -998,6 +998,125 @@ def test_exc_info_as_array_no_exc_info(env: LoggingEnvironment, class_: type[Bas
     return
 
 
+@pytest.mark.parametrize("class_", ALL_FORMATTERS)
+def test_project_exceptions_explicit_cause(
+    env: LoggingEnvironment, class_: type[BaseJsonFormatter]
+):
+    env.set_formatter(class_(project_exceptions=True))
+
+    try:
+        try:
+            raise ValueError("inner user submitted content")
+        except ValueError as cause:
+            raise RuntimeError("outer user submitted content") from cause
+    except RuntimeError:
+        env.logger.exception("something failed")
+    log_json = env.load_json()
+
+    exc_info = log_json["exc_info"]
+    # exception types, stack locations, and the explicit cause marker are kept in order
+    assert "ValueError" in exc_info
+    assert "RuntimeError" in exc_info
+    assert exc_info.index("ValueError") < exc_info.index(
+        "The above exception was the direct cause of the following exception:"
+    )
+    assert exc_info.index(
+        "The above exception was the direct cause of the following exception:"
+    ) < exc_info.index("RuntimeError")
+    assert 'File "' in exc_info
+    # the original exception messages are not logged
+    assert "inner user submitted content" not in exc_info
+    assert "outer user submitted content" not in exc_info
+    return
+
+
+@pytest.mark.parametrize("class_", ALL_FORMATTERS)
+def test_project_exceptions_implicit_context(
+    env: LoggingEnvironment, class_: type[BaseJsonFormatter]
+):
+    env.set_formatter(class_(project_exceptions=True))
+
+    try:
+        try:
+            raise ValueError("inner user submitted content")
+        except ValueError:
+            raise RuntimeError("outer user submitted content")
+    except RuntimeError:
+        env.logger.exception("something failed")
+    log_json = env.load_json()
+
+    exc_info = log_json["exc_info"]
+    # exception types, stack locations, and the implicit context marker are kept in order
+    assert "ValueError" in exc_info
+    assert "RuntimeError" in exc_info
+    assert exc_info.index("ValueError") < exc_info.index(
+        "During handling of the above exception, another exception occurred:"
+    )
+    assert exc_info.index(
+        "During handling of the above exception, another exception occurred:"
+    ) < exc_info.index("RuntimeError")
+    assert 'File "' in exc_info
+    # the original exception messages are not logged
+    assert "inner user submitted content" not in exc_info
+    assert "outer user submitted content" not in exc_info
+    return
+
+
+@pytest.mark.parametrize("class_", ALL_FORMATTERS)
+def test_project_exceptions_stack_info(env: LoggingEnvironment, class_: type[BaseJsonFormatter]):
+    env.set_formatter(class_("%(stack_info)s", project_exceptions=True))
+
+    env.logger.info("hello", stack_info=True)
+    log_json = env.load_json()
+
+    # only the header and stack locations are kept, source lines are removed
+    lines = log_json["stack_info"].splitlines()
+    assert lines[0] == "Stack (most recent call last):"
+    assert len(lines) > 1
+    for line in lines[1:]:
+        assert line.startswith('  File "'), line
+    return
+
+
+@pytest.mark.parametrize("class_", ALL_FORMATTERS)
+def test_project_exceptions_as_array(env: LoggingEnvironment, class_: type[BaseJsonFormatter]):
+    env.set_formatter(class_(exc_info_as_array=True, project_exceptions=True))
+
+    try:
+        raise ValueError("user submitted content")
+    except ValueError:
+        env.logger.exception("something failed")
+    log_json = env.load_json()
+
+    exc_info = log_json["exc_info"]
+    assert isinstance(exc_info, list)
+    assert "ValueError" in exc_info
+    assert any(line.startswith('  File "') for line in exc_info)
+    assert "user submitted content" not in "\n".join(exc_info)
+    return
+
+
+@pytest.mark.parametrize("class_", ALL_FORMATTERS)
+def test_project_exceptions_disabled_by_default(
+    env: LoggingEnvironment, class_: type[BaseJsonFormatter]
+):
+    env.set_formatter(class_())
+
+    try:
+        try:
+            raise ValueError("inner user submitted content")
+        except ValueError as cause:
+            raise RuntimeError("outer user submitted content") from cause
+    except RuntimeError:
+        env.logger.exception("something failed")
+    log_json = env.load_json()
+
+    # the default output keeps the full exception messages
+    assert "ValueError: inner user submitted content" in log_json["exc_info"]
+    assert "RuntimeError: outer user submitted content" in log_json["exc_info"]
+    return
+
+
 @pytest.mark.skipif(
     sys.version_info < (3, 11), reason="Exception notes require Python 3.11 or higher"
 )

@@ -67,6 +67,18 @@ STYLE_STRING_TEMPLATE_REGEX = re.compile(
 )  # $ style
 STYLE_PERCENT_REGEX = re.compile(r"%(?:%|\((?P<named>.+?)\))", re.IGNORECASE)  # % style
 
+_EXCEPTION_TEXT_STRUCTURAL_LINES = frozenset(
+    {
+        "Traceback (most recent call last):",
+        "Exception Group Traceback (most recent call last):",
+        "Stack (most recent call last):",
+        "The above exception was the direct cause of the following exception:",
+        "During handling of the above exception, another exception occurred:",
+    }
+)
+_EXCEPTION_GROUP_PREFIX_REGEX = re.compile(r"(?P<prefix>(?:\s*\| )*)(?P<content>.*)")
+_FRAME_LINE_REGEX = re.compile(r'File ".*", line \d+, in .+')
+
 ## Type Aliases
 ## -----------------------------------------------------------------------------
 LogData: TypeAlias = dict[str, Any]
@@ -105,6 +117,51 @@ def merge_record_extra(
     return target
 
 
+def project_exception_text(text: str) -> str:
+    """Project formatted exception or stack text to exception types and stack locations.
+
+    Exception messages (which may contain user-supplied data), notes, and source
+    lines are removed, while `Traceback`/`Stack` headers, `File` frame lines, and
+    exception chaining markers are kept so the order of chained exceptions remains
+    visible.
+
+    Args:
+        text: formatted exception or stack text, e.g. from
+            [`traceback.format_exc`][traceback.format_exc]
+
+    *Added in 4.3*
+    """
+    projected_lines: list[str] = []
+    in_exception_message = False
+    for line in text.splitlines():
+        match = _EXCEPTION_GROUP_PREFIX_REGEX.match(line)
+        assert match is not None  # the pattern matches any string
+        prefix = match["prefix"]
+        content = match["content"]
+        stripped = content.strip()
+        if not stripped:
+            continue
+
+        if (
+            stripped in _EXCEPTION_TEXT_STRUCTURAL_LINES
+            or _FRAME_LINE_REGEX.match(content.lstrip()) is not None
+            or stripped.startswith("+")  # exception group separators
+        ):
+            projected_lines.append(line)
+            in_exception_message = False
+            continue
+
+        if in_exception_message or content[:1].isspace():
+            # continuation of an exception message or notes, or a source line
+            continue
+
+        # exception line: keep the type, drop the message
+        projected_lines.append(prefix + content.split(":", 1)[0])
+        in_exception_message = True
+
+    return "\n".join(projected_lines)
+
+
 ### CLASSES
 ### ============================================================================
 class BaseJsonFormatter(logging.Formatter):
@@ -136,6 +193,7 @@ class BaseJsonFormatter(logging.Formatter):
         defaults: dict[str, Any] | None = None,
         exc_info_as_array: bool = False,
         stack_info_as_array: bool = False,
+        project_exceptions: bool = False,
     ) -> None:
         """
         Args:
@@ -162,6 +220,11 @@ class BaseJsonFormatter(logging.Formatter):
             exc_info_as_array: break the exc_info into a list of lines based on line breaks,
                 including cached exception text in records received over a transport.
             stack_info_as_array: break the stack_info into a list of lines based on line breaks.
+            project_exceptions: project `exc_info` (including cached exception text) and
+                `stack_info` to exception types and stack locations only, removing exception
+                messages, notes, and source lines. Exception chaining markers are kept so
+                the order of chained exceptions remains visible. See
+                [`project_exception_text`][pythonjsonlogger.core.project_exception_text].
 
         *Changed in 3.1*:
 
@@ -175,6 +238,8 @@ class BaseJsonFormatter(logging.Formatter):
         *Changed in 3.2*: `defaults` argument is no longer ignored.
 
         *Added in 3.3*: `exc_info_as_array` and `stack_info_as_array` options are added.
+
+        *Added in 4.3*: `project_exceptions` option is added.
 
         *Added in 4.0*:
 
@@ -239,6 +304,7 @@ class BaseJsonFormatter(logging.Formatter):
         self._skip_fields.update(self.reserved_attrs)
         self.exc_info_as_array = exc_info_as_array
         self.stack_info_as_array = stack_info_as_array
+        self.project_exceptions = project_exceptions
         return
 
     def usesTime(self) -> bool:
@@ -275,8 +341,11 @@ class BaseJsonFormatter(logging.Formatter):
         if record.exc_info and not message_dict.get("exc_info"):
             message_dict["exc_info"] = self.formatException(record.exc_info)
         if not message_dict.get("exc_info") and record.exc_text:
+            exc_text = record.exc_text
+            if self.project_exceptions:
+                exc_text = project_exception_text(exc_text)
             message_dict["exc_info"] = (
-                record.exc_text.splitlines() if self.exc_info_as_array else record.exc_text
+                exc_text.splitlines() if self.exc_info_as_array else exc_text
             )
 
         # Display formatted record of stack frames
@@ -432,14 +501,23 @@ class BaseJsonFormatter(logging.Formatter):
         """Format and return the specified exception information.
 
         If exc_info_as_array is set to True, This method returns an array of strings.
+        If project_exceptions is set to True, exception messages, notes, and source
+        lines are removed, keeping only exception types, stack locations, and
+        exception chaining markers.
         """
         exception_info_str = super().formatException(ei)
+        if self.project_exceptions:
+            exception_info_str = project_exception_text(exception_info_str)
         return exception_info_str.splitlines() if self.exc_info_as_array else exception_info_str
 
     def formatStack(self, stack_info) -> str | list[str]:  # type: ignore[override]
         """Format and return the specified stack information.
 
         If stack_info_as_array is set to True, This method returns an array of strings.
+        If project_exceptions is set to True, source lines are removed, keeping only
+        stack locations.
         """
         stack_info_str = super().formatStack(stack_info)
+        if self.project_exceptions:
+            stack_info_str = project_exception_text(stack_info_str)
         return stack_info_str.splitlines() if self.stack_info_as_array else stack_info_str
