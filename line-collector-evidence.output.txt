@@ -1,0 +1,156 @@
+==============================================================================
+# 1. 默认 JsonFormatter：换行/制表符/CR/NUL/BEL/非 ASCII 全部进 JSON 字符串
+默认 json_ensure_ascii=True, json_indent=None
+
+[原始字节 repr]
+   b'{"levelname": "INFO", "name": "demo", "message": "line1\\nline2\\ttabbed\\r\\rcrlf-end\\u0000nul\\u0007bell \\u4e2d\\u6587/emoji: \\u4f60\\u597d\\ud83d\\ude00\\t\\u7ed3\\u675f"}'
+   b''
+[原始文本]
+{"levelname": "INFO", "name": "demo", "message": "line1\nline2\ttabbed\r\rcrlf-end\u0000nul\u0007bell \u4e2d\u6587/emoji: \u4f60\u597d\ud83d\ude00\t\u7ed3\u675f"}
+[逐行 json.loads 验证]
+  line1: OK -> {"levelname": "INFO", "name": "demo", "message": "line1\nline2\ttabbed\r\rcrlf-end\u0000nul\u0007bell 中文/emoji: 你好😀\t结束"}
+[物理行数 splitlines()=1]  [内嵌真实 LF 计数(含终止符)=1]
+==============================================================================
+# 2. json_ensure_ascii=False：非 ASCII 以原始 UTF-8 落盘，控制字符仍被转义
+
+[原始字节 repr]
+   b'{"levelname": "INFO", "message": "\xe4\xbd\xa0\xe5\xa5\xbd\xef\xbc\x8c\xe4\xb8\x96\xe7\x95\x8c\\n\xe7\xac\xac\xe4\xba\x8c\xe8\xa1\x8c\\ttab\xf0\x9f\x98\x80"}'
+   b''
+[原始文本]
+{"levelname": "INFO", "message": "你好，世界\n第二行\ttab😀"}
+[逐行 json.loads 验证]
+  line1: OK -> {"levelname": "INFO", "message": "你好，世界\n第二行\ttab😀"}
+[物理行数 splitlines()=1]  [内嵌真实 LF 计数(含终止符)=1]
+  断言: 物理行=1 且 UTF-8 中文原样存在 -> True
+==============================================================================
+# 3. exc_info 异常栈：traceback 内大量换行，作为 JSON 字符串被整体转义
+
+[原始字节 repr]
+   b'{"levelname": "ERROR", "message": "\\u4efb\\u52a1\\u5931\\u8d25", "exc_info": "Traceback (most recent call last):\\n  File \\"/tmp/claude-501/pjl-evidence/evidence.py\\", line 66, in <module>\\n    raise RuntimeError(\\"boom\\\\n\\u7b2c\\u4e8c\\u884c\\u5f02\\u5e38\\u4fe1\\u606f\\")\\nRuntimeError: boom\\n\\u7b2c\\u4e8c\\u884c\\u5f02\\u5e38\\u4fe1\\u606f"}'
+   b''
+[原始文本]
+{"levelname": "ERROR", "message": "\u4efb\u52a1\u5931\u8d25", "exc_info": "Traceback (most recent call last):\n  File \"/tmp/claude-501/pjl-evidence/evidence.py\", line 66, in <module>\n    raise RuntimeError(\"boom\\n\u7b2c\u4e8c\u884c\u5f02\u5e38\u4fe1\u606f\")\nRuntimeError: boom\n\u7b2c\u4e8c\u884c\u5f02\u5e38\u4fe1\u606f"}
+[逐行 json.loads 验证]
+  line1: OK -> {"levelname": "ERROR", "message": "任务失败", "exc_info": "Traceback (most recent call last):\n  File \"/tmp/claude-501/pjl-evidence/evidence.py\", line 66, in <mod
+[物理行数 splitlines()=1]  [内嵌真实 LF 计数(含终止符)=1]
+[解析后 exc_info 还原出的前 3 行]
+   | Traceback (most recent call last):
+   |   File "/tmp/claude-501/pjl-evidence/evidence.py", line 66, in <module>
+   |     raise RuntimeError("boom\n第二行异常信息")
+==============================================================================
+# 4. exc_info_as_array=True：栈帧变成 JSON 数组，换行变成数组元素边界
+
+[原始字节 repr]
+   b'{"levelname": "ERROR", "message": "\\u4efb\\u52a1\\u5931\\u8d25", "exc_info": ["Traceback (most recent call last):", "  File \\"/tmp/claude-501/pjl-evidence/evidence.py\\", line 78, in <module>", "    raise ValueError(\\"\\u6570\\u7ec4\\u5316\\u5f02\\u5e38\\")", "ValueError: \\u6570\\u7ec4\\u5316\\u5f02\\u5e38"]}'
+   b''
+[原始文本]
+{"levelname": "ERROR", "message": "\u4efb\u52a1\u5931\u8d25", "exc_info": ["Traceback (most recent call last):", "  File \"/tmp/claude-501/pjl-evidence/evidence.py\", line 78, in <module>", "    raise ValueError(\"\u6570\u7ec4\u5316\u5f02\u5e38\")", "ValueError: \u6570\u7ec4\u5316\u5f02\u5e38"]}
+[逐行 json.loads 验证]
+  line1: OK -> {"levelname": "ERROR", "message": "任务失败", "exc_info": ["Traceback (most recent call last):", "  File \"/tmp/claude-501/pjl-evidence/evidence.py\", line 78, in <
+[物理行数 splitlines()=1]  [内嵌真实 LF 计数(含终止符)=1]
+==============================================================================
+# 5. stack_info 同样是多行字符串，同样在 JSON 内部转义
+
+[原始字节 repr]
+   b'{"levelname": "WARNING", "message": "\\u5e26\\u5806\\u6808\\u7684\\u544a\\u8b66", "stack_info": "Stack (most recent call last):\\n  File \\"/tmp/claude-501/pjl-evidence/evidence.py\\", line 85, in <module>\\n    lg.warning(\\"\\u5e26\\u5806\\u6808\\u7684\\u544a\\u8b66\\", stack_info=True)"}'
+   b''
+[原始文本]
+{"levelname": "WARNING", "message": "\u5e26\u5806\u6808\u7684\u544a\u8b66", "stack_info": "Stack (most recent call last):\n  File \"/tmp/claude-501/pjl-evidence/evidence.py\", line 85, in <module>\n    lg.warning(\"\u5e26\u5806\u6808\u7684\u544a\u8b66\", stack_info=True)"}
+[逐行 json.loads 验证]
+  line1: OK -> {"levelname": "WARNING", "message": "带堆栈的告警", "stack_info": "Stack (most recent call last):\n  File \"/tmp/claude-501/pjl-evidence/evidence.py\", line 85, in <m
+[物理行数 splitlines()=1]  [内嵌真实 LF 计数(含终止符)=1]
+==============================================================================
+# 6. 连续 3 条记录：收集器按 \n 切分恰好得到 3 个完整 JSON
+
+[原始字节 repr]
+   b'{"levelname": "INFO", "message": "\\u7b2c\\u4e00\\u6761\\n\\u5185\\u542b\\u6362\\u884c"}'
+   b'{"levelname": "INFO", "message": "", "event": "dict-msg", "detail": "a\\tb\\nc"}'
+   b'{"levelname": "INFO", "message": "\\u7b2c\\u4e09\\u6761 \\u65e5\\u672c\\u8a9e: \\u30c6\\u30b9\\u30c8"}'
+   b''
+[原始文本]
+{"levelname": "INFO", "message": "\u7b2c\u4e00\u6761\n\u5185\u542b\u6362\u884c"}
+{"levelname": "INFO", "message": "", "event": "dict-msg", "detail": "a\tb\nc"}
+{"levelname": "INFO", "message": "\u7b2c\u4e09\u6761 \u65e5\u672c\u8a9e: \u30c6\u30b9\u30c8"}
+[逐行 json.loads 验证]
+  line1: OK -> {"levelname": "INFO", "message": "第一条\n内含换行"}
+  line2: OK -> {"levelname": "INFO", "message": "", "event": "dict-msg", "detail": "a\tb\nc"}
+  line3: OK -> {"levelname": "INFO", "message": "第三条 日本語: テスト"}
+[物理行数 splitlines()=3]  [内嵌真实 LF 计数(含终止符)=3]
+  断言: 3 条记录 == 3 个可解析物理行 -> True
+==============================================================================
+# 7-A. 风险：json_indent=2 时单条记录跨多个物理行，按行收集器全部解析失败
+
+[原始字节 repr]
+   b'{'
+   b'  "levelname": "INFO",'
+   b'  "message": "\\u7f29\\u8fdb\\u8f93\\u51fa\\n\\u5185\\u542b\\u6362\\u884c"'
+   b'}'
+   b''
+[原始文本]
+{
+  "levelname": "INFO",
+  "message": "\u7f29\u8fdb\u8f93\u51fa\n\u5185\u542b\u6362\u884c"
+}
+[逐行 json.loads 验证]
+  line1: FAIL (JSONDecodeError: Expecting property name enclosed in double quotes: line 1 column 2 (char 1))
+  line2: FAIL (JSONDecodeError: Extra data: line 1 column 14 (char 13))
+  line3: FAIL (JSONDecodeError: Extra data: line 1 column 12 (char 11))
+  line4: FAIL (JSONDecodeError: Expecting value: line 1 column 1 (char 0))
+[物理行数 splitlines()=4]  [内嵌真实 LF 计数(含终止符)=4]
+==============================================================================
+# 7-B. 风险：prefix 在 JSON 之外拼接，prefix 中的换行不受 JSON 转义保护
+
+[原始字节 repr]
+   b'NOT-JSON-PREFIX'
+   b'{"message": "prefix \\u6ce8\\u5165\\u6362\\u884c"}'
+   b''
+[原始文本]
+NOT-JSON-PREFIX
+{"message": "prefix \u6ce8\u5165\u6362\u884c"}
+[逐行 json.loads 验证]
+  line1: FAIL (JSONDecodeError: Expecting value: line 1 column 1 (char 0))
+  line2: OK -> {"message": "prefix 注入换行"}
+[物理行数 splitlines()=2]  [内嵌真实 LF 计数(含终止符)=2]
+==============================================================================
+# 7-C. 风险（formatter 之外）：同一目标流混入 print/write 的非 JSON 文本
+
+[原始字节 repr]
+   b'{"levelname": "INFO", "message": "\\u7ed3\\u6784\\u5316\\u8bb0\\u5f55"}'
+   b'\xe6\x9f\x90\xe5\xba\x93\xe7\x9b\xb4\xe6\x8e\xa5 print \xe7\x9a\x84\xe7\xba\xaf\xe6\x96\x87\xe6\x9c\xac\t\xe4\xb8\x8d\xe5\x90\xabJSON'
+   b'\xe7\xac\xac\xe4\xb8\x89\xe6\x96\xb9 C \xe6\x89\xa9\xe5\xb1\x95 write \xe7\x9a\x84\xe5\x8d\x8a\xe8\xa1\x8c{"levelname": "INFO", "message": "\\u53c8\\u4e00\\u6761\\u7ed3\\u6784\\u5316\\u8bb0\\u5f55"}'
+   b''
+[原始文本]
+{"levelname": "INFO", "message": "\u7ed3\u6784\u5316\u8bb0\u5f55"}
+某库直接 print 的纯文本	不含JSON
+第三方 C 扩展 write 的半行{"levelname": "INFO", "message": "\u53c8\u4e00\u6761\u7ed3\u6784\u5316\u8bb0\u5f55"}
+[逐行 json.loads 验证]
+  line1: OK -> {"levelname": "INFO", "message": "结构化记录"}
+  line2: FAIL (JSONDecodeError: Expecting value: line 1 column 1 (char 0))
+  line3: FAIL (JSONDecodeError: Expecting value: line 1 column 1 (char 0))
+[物理行数 splitlines()=3]  [内嵌真实 LF 计数(含终止符)=3]
+==============================================================================
+# 7-D. 风险（handler 路径）：emit 异常 -> handleError -> stderr 纯文本堆栈
+[stderr 原始内容 repr]
+'--- Logging error ---\nTraceback (most recent call last):\n  File "/Users/apple/.local/share/uv/python/cpython-3.12.11-macos-aarch64-none/lib/python3.12/logging/__init__.py", line 1163, in emit\n    stream.write(msg + self.terminator)\n  File "/tmp/claude-501/pjl-evidence/evidence.py", line 124, in writ'
+  说明: 若 stderr 与日志收集目标相同（容器 2>&1 常见），非 JSON 行会混入流
+==============================================================================
+# 7-E. handler.terminator='\r\n'：行边界变化
+[原始字节] b'{"message": "CRLF \\u7ec8\\u6b62\\u7b26"}\r\n'
+  按 b'\n' 切分得到 1 段；json 可解析: True
+  按 b'\r\n' 切分得到 1 段；json 可解析: True
+==============================================================================
+# 8. 字节级转义对照表（json.dumps 保证）
+  U+000A  字符='\n'   ensure_ascii转义='\\n'      原始UTF8字节=b'\n'
+  U+0009  字符='\t'   ensure_ascii转义='\\t'      原始UTF8字节=b'\t'
+  U+000D  字符='\r'   ensure_ascii转义='\\r'      原始UTF8字节=b'\r'
+  U+0000  字符='\x00' ensure_ascii转义='\\u0000'  原始UTF8字节=b'\x00'
+  U+001F  字符='\x1f' ensure_ascii转义='\\u001f'  原始UTF8字节=b'\x1f'
+  U+0020  字符=' '    ensure_ascii转义=' '        原始UTF8字节=b' '
+  U+0041  字符='A'    ensure_ascii转义='A'        原始UTF8字节=b'A'
+  U+4E2D  字符='中'    ensure_ascii转义='\\u4e2d'  原始UTF8字节=b'\xe4\xb8\xad'
+  U+1F600  字符='😀'    ensure_ascii转义='\\ud83d\\ude00' 原始UTF8字节=b'\xf0\x9f\x98\x80'
+  U+005C  字符='\\'   ensure_ascii转义='\\\\'     原始UTF8字节=b'\\'
+  U+0022  字符='"'    ensure_ascii转义='\\"'      原始UTF8字节=b'"'
+==============================================================================
+结论: 0x00-0x1F 控制字符在 JSON 字符串内必然以 \uXXXX/\n/\t/\r 形式出现，
+      唯一的真实 0x0A 只能来自 handler 的 terminator —— 这就是按行切分成立的充要条件。
