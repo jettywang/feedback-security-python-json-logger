@@ -697,6 +697,156 @@ def test_rename_reserved_attrs(env: LoggingEnvironment, class_: type[BaseJsonFor
     return
 
 
+## Field selection and renaming chain
+## -----------------------------------------------------------------------------
+@pytest.mark.parametrize("class_", ALL_FORMATTERS)
+def test_output_field_name_mapping(class_: type[BaseJsonFormatter]):
+    formatter = class_(rename_fields={"levelname": "log.level"})
+
+    assert formatter.output_field_name("levelname") == "log.level"
+    # Fields without an alias map to themselves.
+    assert formatter.output_field_name("message") == "message"
+    return
+
+
+@pytest.mark.parametrize("class_", ALL_FORMATTERS)
+def test_is_required_field(class_: type[BaseJsonFormatter]):
+    formatter = class_(["message", "levelname"])
+
+    assert formatter.is_required_field("message") is True
+    assert formatter.is_required_field("levelname") is True
+    assert formatter.is_required_field("filename") is False
+    return
+
+
+@pytest.mark.parametrize("class_", ALL_FORMATTERS)
+def test_is_field_selected_uses_original_name(class_: type[BaseJsonFormatter]):
+    formatter = class_(
+        reserved_attrs=["request_id"],
+        rename_fields={"request_id": "req.id"},
+    )
+
+    # The discard rule matches the pre-rename name, never the alias.
+    assert formatter.is_field_selected("request_id") is False
+    assert formatter.is_field_selected("other") is True
+    return
+
+
+@pytest.mark.parametrize("class_", ALL_FORMATTERS)
+def test_extra_reserved_field_not_resurrected_by_rename(
+    env: LoggingEnvironment, class_: type[BaseJsonFormatter]
+):
+    env.set_formatter(
+        class_(
+            reserved_attrs=RESERVED_ATTRS + ["request_id"],
+            rename_fields={"request_id": "req.id"},
+        )
+    )
+
+    env.logger.info("hello", extra={"request_id": "abc", "kept": 1})
+    log_json = env.load_json()
+
+    assert "request_id" not in log_json
+    assert "req.id" not in log_json
+    assert log_json["kept"] == 1
+    return
+
+
+@pytest.mark.parametrize("class_", ALL_FORMATTERS)
+def test_dict_message_reserved_field_not_resurrected_by_rename(
+    env: LoggingEnvironment, class_: type[BaseJsonFormatter]
+):
+    env.set_formatter(
+        class_(
+            reserved_attrs=RESERVED_ATTRS + ["request_id"],
+            rename_fields={"request_id": "req.id"},
+        )
+    )
+
+    env.logger.info({"request_id": "abc", "kept": 1})
+    log_json = env.load_json()
+
+    assert "request_id" not in log_json
+    assert "req.id" not in log_json
+    assert log_json["kept"] == 1
+    return
+
+
+@pytest.mark.parametrize("class_", ALL_FORMATTERS)
+def test_dict_message_default_reserved_names_are_payload(
+    env: LoggingEnvironment, class_: type[BaseJsonFormatter]
+):
+    # The default RESERVED_ATTRS describe LogRecord attributes, not keys of a
+    # user-supplied dictionary payload, so those names are still emitted.
+    env.set_formatter(class_())
+
+    env.logger.info({"message": "dict message", "filename": "app.py"})
+    log_json = env.load_json()
+
+    assert log_json["message"] == "dict message"
+    assert log_json["filename"] == "app.py"
+    return
+
+
+@pytest.mark.parametrize("class_", ALL_FORMATTERS)
+def test_dict_message_injected_fields_bypass_reserved(
+    env: LoggingEnvironment, class_: type[BaseJsonFormatter]
+):
+    # exc_info/stack_info are injected by the framework and stay available even
+    # though their names are part of the default RESERVED_ATTRS, including when
+    # renamed.
+    env.set_formatter(class_(rename_fields={"exc_info": "error", "stack_info": "stack"}))
+
+    try:
+        raise ValueError("test")
+    except ValueError:
+        env.logger.exception({"ok": 1}, stack_info=True)
+    log_json = env.load_json()
+
+    assert "error" in log_json
+    assert "stack" in log_json
+    assert "exc_info" not in log_json
+    assert "stack_info" not in log_json
+    return
+
+
+@pytest.mark.parametrize("class_", ALL_FORMATTERS)
+def test_same_name_extra_overrides_default_through_rename(
+    env: LoggingEnvironment, class_: type[BaseJsonFormatter]
+):
+    env.set_formatter(
+        class_(defaults={"environment": "dev"}, rename_fields={"environment": "env"})
+    )
+
+    env.logger.info("default wins")
+    default_log = env.load_json()
+
+    env.buffer.truncate(0)
+    env.buffer.seek(0)
+    env.logger.info("extra wins", extra={"environment": "prod"})
+    override_log = env.load_json()
+
+    assert default_log["env"] == "dev"
+    assert override_log["env"] == "prod"
+    assert "environment" not in default_log
+    assert "environment" not in override_log
+    return
+
+
+@pytest.mark.parametrize("class_", ALL_FORMATTERS)
+def test_same_name_extra_overrides_dict_message_through_rename(
+    env: LoggingEnvironment, class_: type[BaseJsonFormatter]
+):
+    env.set_formatter(class_(rename_fields={"env": "environment"}))
+
+    env.logger.info({"env": "from-dict"}, extra={"env": "from-extra"})
+    log_json = env.load_json()
+
+    assert log_json["environment"] == "from-extra"
+    assert "env" not in log_json
+    return
+
+
 @freezegun.freeze_time(datetime.datetime(2017, 7, 14, 2, 40))
 @pytest.mark.parametrize("class_", ALL_FORMATTERS)
 def test_default_encoder_with_timestamp(env: LoggingEnvironment, class_: type[BaseJsonFormatter]):

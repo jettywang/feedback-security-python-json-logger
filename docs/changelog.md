@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI: Use trusted publishing to create PyPI and GitHub releases.
 - Documentation: Quickstart examples are tested to ensure the sample output matches reality.
 - Add support for Python 3.15, PyPy 3.12
+- `BaseJsonFormatter` now exposes the field selection and renaming chain: `output_field_name()` returns the output key an original field name maps to, `is_required_field()` reports fields selected by `fmt`, `is_field_selected()` reports whether an `extra` field survives `reserved_attrs`, and `is_message_field_selected()` does the same for dictionary message fields.
 
 ### Removed
 - `STYLE_STRING_FORMAT_REGEX`, which is no longer used to find `{` style fields. [#75](https://github.com/nhairs/python-json-logger/pull/75)
@@ -18,8 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Preserve an exception's own notes when encoding exception instances, including exception group summaries. Related to [#67](https://github.com/nhairs/python-json-logger/issues/67).
 - Constrain the documentation dependency to `mkdocs<2`. [#80](https://github.com/nhairs/python-json-logger/issues/80)
 - Replaced MyPy with Pyrefly for type checking
+- Field selection and renaming now run as one explicit select-then-rename chain across all field sources in `BaseJsonFormatter.add_fields`.
 
 ### Fixed
+- A field listed in `reserved_attrs` is now also dropped from a dictionary message (when the name was explicitly added to `reserved_attrs`), and cannot reappear under its `rename_fields` alias. The default `RESERVED_ATTRS` continue to describe `LogRecord` attributes only, so dictionary payload may still use those names.
 - `exc_info_as_array=True` now splits cached exception text into lines when a transported log record has no `exc_info` tuple. [#89](https://github.com/nhairs/python-json-logger/issues/89)
 - `BaseJsonFormatter.usesTime()` now handles comma-separated and sequence formats, honors custom field parsing, and ignores escaped literal `asctime` fields. [#91](https://github.com/nhairs/python-json-logger/issues/91)
 - `%` style formats no longer treat the escaped literal `%%` as the start of a field, so `"%%(notafield)s"` is correctly read as literal text. [#75](https://github.com/nhairs/python-json-logger/pull/75)

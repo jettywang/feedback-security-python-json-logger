@@ -200,6 +200,61 @@ formatter = JsonFormatter(
 )
 ```
 
+#### The selection and renaming chain
+
+Selection and renaming are one ordered chain, applied to every field source listed under [Field Precedence](#field-precedence):
+
+1. **Select** using the field's original name. A field whose original name is discarded by `reserved_attrs` is removed here.
+2. **Rename** the surviving field through `rename_fields` to get its output key.
+
+Because selection happens before renaming, a discard rule always matches the name the field had *before* renaming. The output alias is never matched, so a field in `reserved_attrs` cannot reappear under a `rename_fields` alias:
+
+```python
+formatter = JsonFormatter(
+    reserved_attrs=RESERVED_ATTRS + ["request_id"],
+    rename_fields={"request_id": "req.id"},
+)
+logger.info("hello", extra={"request_id": "abc"})
+```
+
+Output (neither `request_id` nor the alias `req.id` appears):
+
+```json
+{"message": "hello"}
+```
+
+The same rule protects a dictionary message. Note the default `RESERVED_ATTRS` only describe `LogRecord` attributes, so a logged dictionary may still use those names as payload; only names you explicitly add to `reserved_attrs` are removed from a dictionary message:
+
+```python
+formatter = JsonFormatter(reserved_attrs=RESERVED_ATTRS + ["request_id"])
+logger.info({"message": "dictionary payload", "request_id": "abc", "ok": true})
+```
+
+Output:
+
+```json
+{"message": "dictionary payload", "ok": true}
+```
+
+#### Inspecting the chain
+
+The formatter exposes the chain's decisions for its current configuration, which is useful when taking over an existing configuration and checking which name a rule actually matches:
+
+```python
+formatter = JsonFormatter(
+    ["message", "levelname"],
+    reserved_attrs=RESERVED_ATTRS + ["request_id"],
+    rename_fields={"levelname": "log.level", "request_id": "req.id"},
+)
+
+formatter.output_field_name("levelname")    # "log.level"
+formatter.output_field_name("message")      # "message" (no alias)
+formatter.is_required_field("levelname")    # True (selected by fmt)
+formatter.is_field_selected("request_id")   # False (discarded before renaming)
+```
+
+`output_field_name` returns the output key an original name maps to, `is_required_field` reports names selected by `fmt`, and `is_field_selected` reports whether an `extra` field survives `reserved_attrs`. All three use original, pre-rename names.
+
 ### Custom object serialization
 
 Most formatters support `json_default` which is used to control how objects are serialized.

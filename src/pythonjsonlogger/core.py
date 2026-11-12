@@ -87,6 +87,12 @@ def merge_record_extra(
     """
     Merges extra attributes from LogRecord object into target dictionary
 
+    Selection and renaming follow the same chain as `BaseJsonFormatter`: a field
+    is selected using its original name (`key not in reserved`, private `_`
+    prefixed attributes are skipped) and only afterwards renamed through
+    `rename_fields`. This means a discard rule always matches the name a field
+    had before renaming; the renamed output name is never matched.
+
     Args:
         record: logging.LogRecord
         target: dict to update
@@ -116,6 +122,11 @@ class BaseJsonFormatter(logging.Formatter):
     """
 
     _style: logging.PercentStyle | str  # type: ignore[assignment]
+
+    #: Fields `format` injects into a dictionary message. These carry framework
+    #: exception/stack data rather than user content so they bypass
+    #: `reserved_attrs` when processing a dictionary message.
+    _MESSAGE_INJECTED_FIELDS: frozenset[str] = frozenset({"exc_info", "stack_info"})
 
     ## Parent Methods
     ## -------------------------------------------------------------------------
@@ -235,8 +246,15 @@ class BaseJsonFormatter(logging.Formatter):
         self.reserved_attrs = set(reserved_attrs)
         self.timestamp = timestamp
 
+        # Selection happens before renaming: this set always holds the original
+        # (pre-rename) names that must not be merged from the LogRecord, namely the
+        # fields selected by `fmt` and everything listed in `reserved_attrs`.
         self._skip_fields = set(self._required_fields)
         self._skip_fields.update(self.reserved_attrs)
+        # A dictionary message is user payload, so the default LogRecord
+        # RESERVED_ATTRS do not apply to it. Only names the caller explicitly
+        # added to `reserved_attrs` discard matching dictionary message fields.
+        self._message_skip_fields = self.reserved_attrs.difference(RESERVED_ATTRS)
         self.exc_info_as_array = exc_info_as_array
         self.stack_info_as_array = stack_info_as_array
         return
@@ -359,6 +377,28 @@ class BaseJsonFormatter(logging.Formatter):
     ) -> None:
         """Extract fields from a LogRecord for logging
 
+        Every field source is pushed through the same processing chain
+        (`process_field`): selection against the original field name first, then
+        renaming to the output name. Sources are applied in documented
+        precedence order so a later source replaces the value of an earlier one
+        when they resolve to the same output key:
+
+        1. `defaults`
+        2. Fields selected by `fmt` (`self._required_fields`)
+        3. `static_fields`
+        4. Fields from a dictionary `message` (`message_dict`)
+        5. Remaining non-reserved `LogRecord` attributes, including `extra`
+
+        Selection always uses the original (pre-rename) name. `defaults`, `fmt`
+        fields and `static_fields` are configuration the caller explicitly asked
+        for and are always emitted. `extra` attributes discard every name in
+        `reserved_attrs` (including the default `RESERVED_ATTRS`), while
+        dictionary message fields only discard names the caller explicitly added
+        to `reserved_attrs`, since the default reserved names describe
+        `LogRecord` attributes rather than user payload. Because renaming only
+        happens after selection, a discarded field cannot reappear in the
+        output through a `rename_fields` alias.
+
         This method can be overridden to implement custom logic for adding fields.
 
         Args:
@@ -368,16 +408,21 @@ class BaseJsonFormatter(logging.Formatter):
                 `logger.info({"is_this_message_dict": True})`
 
         *Changed in 4.0*: `log_record` renamed to `log_data`
+
+        *Changed in 4.3*: dictionary message fields are now subject to
+        `reserved_attrs` and all sources share one select-then-rename chain.
         """
-        for field in self.defaults:
-            log_data[self._get_rename(field)] = self.defaults[field]
+        for field, value in self.defaults.items():
+            self.process_field(log_data, field, value)
 
         for field in self._required_fields:
-            log_data[self._get_rename(field)] = record.__dict__.get(field)
+            self.process_field(log_data, field, record.__dict__.get(field))
 
-        for data_dict in [self.static_fields, message_dict]:
-            for key, value in data_dict.items():
-                log_data[self._get_rename(key)] = value
+        for field, value in self.static_fields.items():
+            self.process_field(log_data, field, value)
+
+        for field, value in message_dict.items():
+            self.process_message_field(log_data, field, value)
 
         merge_record_extra(
             record,
@@ -388,7 +433,7 @@ class BaseJsonFormatter(logging.Formatter):
 
         if self.timestamp:
             key = self.timestamp if isinstance(self.timestamp, str) else "timestamp"
-            log_data[self._get_rename(key)] = datetime.fromtimestamp(
+            log_data[self.output_field_name(key)] = datetime.fromtimestamp(
                 record.created, tz=timezone.utc
             )
 
@@ -398,8 +443,132 @@ class BaseJsonFormatter(logging.Formatter):
                     log_data[field] = None
         return
 
+    def is_field_selected(self, field_name: str) -> bool:
+        """Return whether an `extra`/`LogRecord` field survives discard rules.
+
+        The check uses the field's original name, i.e. the name it has before
+        `rename_fields` is applied. Fields listed in `reserved_attrs` return
+        `False`; the output alias produced by renaming is never matched.
+
+        This governs `LogRecord` attributes merged through `extra`. Dictionary
+        message fields use `is_message_field_selected` instead because the
+        default `RESERVED_ATTRS` do not apply to user payload. Fields selected
+        by `fmt` and values configured via `defaults` or `static_fields` are
+        explicit configuration and bypass the discard rule.
+
+        Args:
+            field_name: the original field name before renaming
+
+        Returns:
+            `True` when the field is kept and may be emitted, `False` when
+            `reserved_attrs` removes it.
+
+        *Added in 4.3*
+        """
+        return field_name not in self.reserved_attrs
+
+    def is_required_field(self, field_name: str) -> bool:
+        """Return whether `field_name` is selected for output by `fmt`.
+
+        Required fields are emitted unconditionally and are not merged again
+        from `extra`; they also bypass the `reserved_attrs` discard rule.
+
+        Args:
+            field_name: the original field name before renaming
+
+        *Added in 4.3*
+        """
+        return field_name in self._required_fields
+
+    def output_field_name(self, field_name: str) -> str:
+        """Return the output key that `field_name` is renamed to.
+
+        This is the queryable view of the rename chain: fields absent from
+        `rename_fields` map to themselves. It is the same mapping applied to
+        every field source in `add_fields`.
+
+        Args:
+            field_name: the original field name before renaming
+
+        Returns:
+            the field name used as the key in the emitted log data
+
+        *Added in 4.3*
+        """
+        return self.rename_fields.get(field_name, field_name)
+
+    def process_field(
+        self, log_data: dict[str, Any], field_name: str, value: Any
+    ) -> None:
+        """Apply the select-then-rename chain to an explicit configuration field.
+
+        Used for `defaults`, fields selected by `fmt` and `static_fields`,
+        which are always emitted because the caller configured them explicitly.
+        The field is stored under its output name (`output_field_name`).
+        `process_message_field` adds the discard-rule step for dictionary
+        message fields, and `merge_record_extra` implements the same chain for
+        the remaining `LogRecord` attributes.
+
+        Args:
+            log_data: the output dictionary being built
+            field_name: the original field name before renaming
+            value: the field value
+
+        *Added in 4.3*
+        """
+        log_data[self.output_field_name(field_name)] = value
+        return
+
+    def process_message_field(
+        self, log_data: dict[str, Any], field_name: str, value: Any
+    ) -> None:
+        """Apply the select-then-rename chain to a dictionary message field.
+
+        A user-supplied dictionary field is first selected using its original
+        name (`is_message_field_selected`) and only then renamed
+        (`output_field_name`). Keeping selection before renaming means a field
+        listed in `reserved_attrs` is dropped even when `rename_fields` maps it
+        to an alias. The default `RESERVED_ATTRS` only excludes `LogRecord`
+        attributes and is not applied to a dictionary payload, so a logged
+        dictionary may use names such as `message` or `filename`; names the
+        caller explicitly adds to `reserved_attrs` are still discarded. The
+        exception details injected by `format` (`exc_info`/`stack_info`) are
+        framework fields rather than user content and are always allowed
+        through.
+
+        Args:
+            log_data: the output dictionary being built
+            field_name: the original field name before renaming
+            value: the field value
+
+        *Added in 4.3*
+        """
+        if self.is_message_field_selected(field_name):
+            log_data[self.output_field_name(field_name)] = value
+        return
+
+    def is_message_field_selected(self, field_name: str) -> bool:
+        """Return whether a dictionary message field survives discard rules.
+
+        Unlike `LogRecord` attributes, a dictionary message is user-controlled
+        payload so the default `RESERVED_ATTRS` does not apply to it. A field
+        is discarded only when its original name was explicitly added to
+        `reserved_attrs` by the caller. The framework-injected fields
+        (`exc_info`/`stack_info`) are always allowed. Selection always uses the
+        original, pre-rename name, so an alias cannot resurrect a discarded
+        field.
+
+        Args:
+            field_name: the original field name before renaming
+
+        *Added in 4.3*
+        """
+        if field_name in self._MESSAGE_INJECTED_FIELDS:
+            return True
+        return field_name not in self._message_skip_fields
+
     def _get_rename(self, key: str) -> str:
-        return self.rename_fields.get(key, key)
+        return self.output_field_name(key)
 
     # Child Methods
     # ..........................................................................
