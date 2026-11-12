@@ -1184,3 +1184,97 @@ def test_json_ensure_ascii_false(env: LoggingEnvironment):
     msg = env.buffer.getvalue().split('"message": "', 1)[1].split('"', 1)[0]
     assert msg == "Привет"
     return
+
+
+def test_json_max_bytes_invalid() -> None:
+    with pytest.raises(ValueError, match="max_bytes"):
+        JsonFormatter(max_bytes=0)
+    return
+
+
+def test_json_max_bytes_under_budget_unchanged(env: LoggingEnvironment) -> None:
+    env.set_formatter(JsonFormatter("%(levelname)s %(message)s", max_bytes=4096))
+    env.logger.info("hello")
+    log_json = env.load_json()
+
+    assert log_json["message"] == "hello"
+    assert log_json["levelname"] == "INFO"
+    assert "_truncated" not in log_json
+    return
+
+
+def test_json_max_bytes_multibyte_message(env: LoggingEnvironment) -> None:
+    message = "エラー発生" * 100  # 1500 UTF-8 bytes
+    env.set_formatter(JsonFormatter("%(levelname)s %(message)s", max_bytes=600))
+    env.logger.info(message)
+
+    output = env.buffer.getvalue().removesuffix("\n")
+    assert len(output.encode("utf-8")) <= 600
+
+    log_json = json.loads(output)
+    assert log_json["levelname"] == "INFO"
+    assert log_json["message"].endswith("…")
+    # multi-byte characters must never be split
+    assert message.startswith(log_json["message"][:-1])
+
+    truncated = log_json["_truncated"]
+    assert truncated["original_bytes"] > 600
+    (entry,) = truncated["truncated_fields"]
+    assert entry["field"] == "message"
+    assert entry["original_bytes"] == len(message.encode("utf-8"))
+    assert entry["kept_bytes"] == len(log_json["message"][:-1].encode("utf-8"))
+    # stats must not echo the omitted content
+    assert "エラー" not in json.dumps(truncated)
+    return
+
+
+def test_json_max_bytes_drops_nested_extra_first(env: LoggingEnvironment) -> None:
+    nested = {"payload": {"items": ["x" * 1000], "deep": {"deeper": list(range(100))}}}
+    env.set_formatter(JsonFormatter("%(levelname)s %(message)s", max_bytes=400))
+    env.logger.info("important message", extra={"debug_dump": nested})
+
+    output = env.buffer.getvalue().removesuffix("\n")
+    assert len(output.encode("utf-8")) <= 400
+
+    log_json = json.loads(output)
+    # fixed fields needed for incident retrieval are kept intact
+    assert log_json["message"] == "important message"
+    assert log_json["levelname"] == "INFO"
+    assert "debug_dump" not in log_json
+
+    dropped = log_json["_truncated"]["dropped_fields"]
+    assert [entry["field"] for entry in dropped] == ["debug_dump"]
+    assert dropped[0]["bytes"] > 0
+    # stats must not echo the omitted content
+    assert "x" * 20 not in json.dumps(log_json["_truncated"])
+    return
+
+
+def test_json_max_bytes_exception(env: LoggingEnvironment) -> None:
+    env.set_formatter(JsonFormatter("%(levelname)s %(message)s %(exc_info)s", max_bytes=500))
+    try:
+        raise ValueError("詳細なエラー情報" * 100)
+    except ValueError:
+        env.logger.exception("something broke")
+
+    output = env.buffer.getvalue().removesuffix("\n")
+    assert len(output.encode("utf-8")) <= 500
+
+    log_json = json.loads(output)
+    assert log_json["levelname"] == "ERROR"
+    assert log_json["message"] == "something broke"
+    assert log_json["exc_info"].endswith("…")
+
+    truncated = log_json["_truncated"]
+    assert any(entry["field"] == "exc_info" for entry in truncated["truncated_fields"])
+    assert "詳細なエラー情報" not in json.dumps(truncated)
+    return
+
+
+def test_json_max_bytes_tiny_budget_still_valid_json(env: LoggingEnvironment) -> None:
+    env.set_formatter(JsonFormatter("%(message)s", max_bytes=10))
+    env.logger.info("message that will never fit")
+
+    output = env.buffer.getvalue().removesuffix("\n")
+    json.loads(output)  # must remain valid JSON
+    return

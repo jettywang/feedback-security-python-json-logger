@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI: Use trusted publishing to create PyPI and GitHub releases.
 - Documentation: Quickstart examples are tested to ensure the sample output matches reality.
 - Add support for Python 3.15, PyPy 3.12
+- `JsonFormatter` now accepts `max_bytes`, an optional per-event UTF-8 byte budget. Oversized records are shrunk by dropping non-required fields (largest first) and then truncating long string values, keeping the output valid JSON. What was removed is recorded under the `_truncated` field using field names and byte counts only, never the removed values.
 
 ### Removed
 - `STYLE_STRING_FORMAT_REGEX`, which is no longer used to find `{` style fields. [#75](https://github.com/nhairs/python-json-logger/pull/75)
