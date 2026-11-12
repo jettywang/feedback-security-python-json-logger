@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI: Use trusted publishing to create PyPI and GitHub releases.
 - Documentation: Quickstart examples are tested to ensure the sample output matches reality.
 - Add support for Python 3.15, PyPy 3.12
+- `JsonFormatter` gains `json_default_max_calls` and `json_default_on_limit` options that bound the number of custom JSON conversions per log event. Exceeding the budget emits a fixed `__json_default_limit_exceeded__:<type name>` marker (or raises `JsonDefaultLimitExceededError` with `"abort"`), so converters that endlessly return new objects of the same type can no longer stall or lose the event.
 
 ### Removed
 - `STYLE_STRING_FORMAT_REGEX`, which is no longer used to find `{` style fields. [#75](https://github.com/nhairs/python-json-logger/pull/75)

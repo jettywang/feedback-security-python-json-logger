@@ -215,6 +215,12 @@ formatter = JsonFormatter(json_default=my_default)
 !!! note
     When providing your own `json_default`, you likely want to call the original `json_default` for your encoder. Python JSON Logger provides custom default serializers for each encoder that tries very hard to ensure sane output is always logged.
 
+`JsonFormatter` can limit how many custom conversions a single log event may perform. This protects against broken converters that keep returning new objects of the same type (which would otherwise recurse until the event is lost). When the budget is exceeded the object is replaced with a fixed `__json_default_limit_exceeded__:<type name>` marker so the rest of the event is still logged; set `json_default_on_limit="abort"` to raise `JsonDefaultLimitExceededError` instead.
+
+```python
+formatter = JsonFormatter(json_default=my_default, json_default_max_calls=100)
+```
+
 ### Alternate JSON Encoders
 
 The following JSON encoders are also supported:

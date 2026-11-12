@@ -26,7 +26,12 @@ import pytest
 import pythonjsonlogger
 import pythonjsonlogger.defaults
 from pythonjsonlogger.core import RESERVED_ATTRS, BaseJsonFormatter, merge_record_extra
-from pythonjsonlogger.json import JsonFormatter
+from pythonjsonlogger.json import (
+    JSON_DEFAULT_LIMIT_MARKER,
+    JsonDefaultLimitExceededError,
+    JsonEncoder,
+    JsonFormatter,
+)
 
 if pythonjsonlogger.ORJSON_AVAILABLE:
     from pythonjsonlogger.orjson import OrjsonFormatter
@@ -1183,4 +1188,128 @@ def test_json_ensure_ascii_false(env: LoggingEnvironment):
     # Note: we don't use env.load_json as we want to know the raw output
     msg = env.buffer.getvalue().split('"message": "', 1)[1].split('"', 1)[0]
     assert msg == "Привет"
+    return
+
+
+class RecursiveClass:
+    """A class whose converter keeps returning new objects of the same type."""
+
+    def __init__(self, depth: int = 0):
+        self.depth = depth
+        return
+
+    def __repr__(self):
+        return f"RecursiveClass(SENSITIVE_PAYLOAD_{self.depth})"
+
+    __str__ = __repr__
+
+
+def recursive_default(obj: Any) -> Any:
+    """A broken converter that returns a new object of the same type forever."""
+    if isinstance(obj, RecursiveClass):
+        return RecursiveClass(obj.depth + 1)
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+
+def test_json_default_max_calls_recursive_marker(env: LoggingEnvironment):
+    env.set_formatter(JsonFormatter(json_default=recursive_default, json_default_max_calls=5))
+    env.logger.info("hello", extra={"loop": RecursiveClass(), "safe": "ok"})
+    log_json = env.load_json()
+
+    assert log_json["loop"] == f"{JSON_DEFAULT_LIMIT_MARKER}:RecursiveClass"
+    # Fields encoded before the budget ran out are still logged
+    assert log_json["safe"] == "ok"
+    assert log_json["message"] == "hello"
+    # The object itself is never written out as a diagnostic
+    assert "SENSITIVE_PAYLOAD" not in env.buffer.getvalue()
+    return
+
+
+def test_json_default_max_calls_shared_budget(env: LoggingEnvironment):
+    calls: list[int] = []
+
+    def custom_default(obj: Any) -> Any:
+        if isinstance(obj, SomeClass):
+            calls.append(obj.thing)
+            return {"TYPE": obj.thing}
+        raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+    env.set_formatter(JsonFormatter(json_default=custom_default, json_default_max_calls=3))
+    env.logger.info(
+        "hello",
+        extra={
+            "listed": [SomeClass(1), SomeClass(2)],
+            "first": SomeClass(3),
+            "second": SomeClass(4),
+        },
+    )
+    log_json = env.load_json()
+
+    # Nested objects in a list and unrelated normal objects share one budget
+    assert log_json["listed"] == [{"TYPE": 1}, {"TYPE": 2}]
+    assert log_json["first"] == {"TYPE": 3}
+    assert log_json["second"] == f"{JSON_DEFAULT_LIMIT_MARKER}:SomeClass"
+    assert calls == [1, 2, 3]
+    return
+
+
+def test_json_default_max_calls_budget_reset_per_event(env: LoggingEnvironment):
+    def custom_default(obj: Any) -> Any:
+        if isinstance(obj, SomeClass):
+            return {"TYPE": obj.thing}
+        raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+    env.set_formatter(JsonFormatter(json_default=custom_default, json_default_max_calls=1))
+    env.logger.info("one", extra={"extra": SomeClass(1)})
+    env.logger.info("two", extra={"extra": SomeClass(2)})
+
+    lines = [json.loads(line) for line in env.buffer.getvalue().splitlines()]
+    assert [line["extra"] for line in lines] == [{"TYPE": 1}, {"TYPE": 2}]
+    return
+
+
+def test_json_default_max_calls_abort(env: LoggingEnvironment):
+    formatter = JsonFormatter(
+        json_default=recursive_default,
+        json_default_max_calls=2,
+        json_default_on_limit="abort",
+    )
+    record = logging.LogRecord("test", logging.INFO, __file__, 1, "hello", (), None)
+    record.loop = RecursiveClass()
+
+    with pytest.raises(JsonDefaultLimitExceededError) as exc_info:
+        formatter.format(record)
+
+    # The abort diagnostic must not contain the object itself
+    assert "RecursiveClass" in str(exc_info.value)
+    assert "SENSITIVE_PAYLOAD" not in str(exc_info.value)
+    return
+
+
+def test_json_default_max_calls_custom_encoder(env: LoggingEnvironment):
+    class RecursiveEncoder(JsonEncoder):
+        def default(self, o: Any) -> Any:
+            if isinstance(o, RecursiveClass):
+                return RecursiveClass(o.depth + 1)
+            return super().default(o)
+
+    env.set_formatter(JsonFormatter(json_encoder=RecursiveEncoder, json_default_max_calls=4))
+    env.logger.info("hello", extra={"loop": RecursiveClass(), "safe": "ok"})
+    log_json = env.load_json()
+
+    assert log_json["loop"] == f"{JSON_DEFAULT_LIMIT_MARKER}:RecursiveClass"
+    assert log_json["safe"] == "ok"
+    assert "SENSITIVE_PAYLOAD" not in env.buffer.getvalue()
+    return
+
+
+def test_json_default_max_calls_invalid_on_limit():
+    with pytest.raises(ValueError, match="json_default_on_limit"):
+        JsonFormatter(json_default_max_calls=1, json_default_on_limit="explode")
+    return
+
+
+def test_json_default_max_calls_negative():
+    with pytest.raises(ValueError, match="json_default_max_calls"):
+        JsonFormatter(json_default_max_calls=-1)
     return
